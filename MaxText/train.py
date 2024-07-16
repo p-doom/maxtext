@@ -65,7 +65,7 @@ from layers import quantizations
 
 from ml_goodput_measurement import goodput
 
-Transformer = models.Transformer
+Transformer = models.EncoderDecoderTransformer
 EPS = 1e-8
 
 
