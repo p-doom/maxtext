@@ -351,19 +351,19 @@ class Decoder(nn.Module):
         if use_encoder_hidden_states:
           y = pipeline.Pipeline(config=cfg, mesh=mesh, layers=stage_module, remat_policy=policy)(
               y,
-              decoder_segment_ids,
               decoder_positions,
               encoder_hidden_states,
-              encoder_segment_ids,
               encoder_positions,
+              decoder_segment_ids,
+              encoder_segment_ids,
               deterministic,
               model_mode,
           )
         else:
           y = pipeline.Pipeline(config=cfg, mesh=mesh, layers=stage_module, remat_policy=policy)(
               y,
-              decoder_segment_ids,
               decoder_positions,
+              decoder_segment_ids,
               deterministic,
               model_mode,
           )
@@ -372,19 +372,19 @@ class Decoder(nn.Module):
         if use_encoder_hidden_states:
           y, _ = self.scan_decoder_layers(cfg, RemattedBlockLayer, cfg.num_decoder_layers, "layers", mesh)(
               y,
-              decoder_segment_ids,
               decoder_positions,
               encoder_hidden_states,
-              encoder_segment_ids,
               encoder_positions,
+              decoder_segment_ids,
+              encoder_segment_ids,
               deterministic,
               model_mode,
           )
         else:
           y, _ = self.scan_decoder_layers(cfg, RemattedBlockLayer, cfg.num_decoder_layers, "layers", mesh)(
               y,
-              decoder_segment_ids,
               decoder_positions,
+              decoder_segment_ids,
               deterministic,
               model_mode,
           )
@@ -393,19 +393,19 @@ class Decoder(nn.Module):
           if use_encoder_hidden_states:
             y = RemattedBlockLayer(config=cfg, mesh=mesh, name=f"layers_{lyr}", quant=self.quant)(
                 y,
-                decoder_segment_ids,
                 decoder_positions,
                 encoder_hidden_states,
-                encoder_segment_ids,
                 encoder_positions,
+                decoder_segment_ids,
+                encoder_segment_ids,
                 deterministic,
                 model_mode,
             )
           else:
             y = RemattedBlockLayer(config=cfg, mesh=mesh, name=f"layers_{lyr}", quant=self.quant)(
                 y,
-                decoder_segment_ids,
                 decoder_positions,
+                decoder_segment_ids,
                 deterministic,
                 model_mode,
             )
