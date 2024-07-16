@@ -68,10 +68,10 @@ class Seq2SeqLlamaDecoderLayer(nn.Module):
   @nn.compact
   def __call__(
       self,
-      inputs,
-      encoder_hidden_states,
+      decoder_inputs,
       decoder_segment_ids,
       decoder_positions,
+      encoder_hidden_states,
       encoder_segment_ids,
       encoder_positions,
       deterministic,
@@ -80,7 +80,7 @@ class Seq2SeqLlamaDecoderLayer(nn.Module):
     cfg = self.config
     mesh = self.mesh
 
-    inputs = nn.with_logical_constraint(inputs, ("activation_batch", "activation_length", "activation_embed"))
+    decoder_inputs = nn.with_logical_constraint(decoder_inputs, ("activation_batch", "activation_length", "activation_embed"))
 
     lnx_rms = models.RMSNorm(
         dtype=cfg.dtype,
@@ -89,7 +89,7 @@ class Seq2SeqLlamaDecoderLayer(nn.Module):
         kernel_axes=("norm",),
         epsilon=cfg.normalization_layer_epsilon,
     )
-    lnx = lnx_rms(inputs)
+    lnx = lnx_rms(decoder_inputs)
 
     lnx = nn.with_logical_constraint(lnx, ("activation_batch", "activation_length", "activation_embed"))
 

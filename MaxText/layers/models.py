@@ -146,21 +146,21 @@ class DecoderLayer(nn.Module):
 
     return layer_output, None if cfg.scan_layers else layer_output
 
-class SequentialBlockDecoderLayers(nn.Module):
-  """Sequential unscanned series of decoder layers."""
-  decoder_layer: Any
-  num_decoder_layers: int
+class SequentialBlockLayers(nn.Module):
+  """Sequential unscanned series of layers."""
+  layer: Any
+  num_layers: int
   config: Config
   mesh: Mesh
   quant: Quant
 
   @nn.compact
-  def __call__(self, inputs: jnp.ndarray, decoder_segment_ids, decoder_positions, deterministic, model_mode) -> jnp.ndarray:
-    for lyr in range(self.num_decoder_layers):
-      inputs = self.decoder_layer(config=self.config, mesh=self.mesh, name=f"layers_{lyr}", quant=self.quant)(
+  def __call__(self, inputs: jnp.ndarray, segment_ids, positions, deterministic, model_mode) -> jnp.ndarray:
+    for lyr in range(self.num_layers):
+      inputs = self.layer(config=self.config, mesh=self.mesh, name=f"layers_{lyr}", quant=self.quant)(
         inputs,
-        decoder_segment_ids,
-        decoder_positions,
+        segment_ids,
+        positions,
         deterministic,
         model_mode,
         )
@@ -174,32 +174,41 @@ class Decoder(nn.Module):
   mesh: Mesh
   quant: Optional[Quant] = None
 
-  def get_decoder_layer(self):
-    if self.config.decoder_block == "default":
-      return DecoderLayer
-    elif self.config.decoder_block == "llama2":
-      from layers import llama2
+  def get_decoder_layer(self, use_encoder_hidden_states):
+    if use_encoder_hidden_states:
+      # Currently only llama2 decoder block supports encoder hidden states.
+      if self.config.decoder_block == "llama2":
+        from layers import seq2seq_llama2
 
-      return llama2.LlamaDecoderLayer
-    elif self.config.decoder_block == "mistral":
-      # TODO(ranran): update to Mistral with sliding window attention
-      from layers import mistral
-
-      return mistral.MistralDecoderLayer
-    elif self.config.decoder_block == "gemma":
-      from layers import gemma
-
-      return gemma.GemmaDecoderLayer
-    elif self.config.decoder_block == "gpt3":
-      from layers import gpt3
-
-      return gpt3.Gpt3DecoderLayer
-    elif self.config.decoder_block == "simple":
-      from layers import simple_layer
-
-      return simple_layer.SimpleDecoderLayer
+        return seq2seq_llama2.Seq2SeqLlamaDecoderLayer
+      else:
+        raise ValueError(f"Incorrect decoder_block name {self.config.decoder_block=} for encoder-decoder model (or not supported yet)")
     else:
-      raise ValueError(f"Incorrect decoder_block name {self.config.decoder_block=}")
+      if self.config.decoder_block == "default":
+        return DecoderLayer
+      elif self.config.decoder_block == "llama2":
+        from layers import llama2
+
+        return llama2.LlamaDecoderLayer
+      elif self.config.decoder_block == "mistral":
+        # TODO(ranran): update to Mistral with sliding window attention
+        from layers import mistral
+
+        return mistral.MistralDecoderLayer
+      elif self.config.decoder_block == "gemma":
+        from layers import gemma
+
+        return gemma.GemmaDecoderLayer
+      elif self.config.decoder_block == "gpt3":
+        from layers import gpt3
+
+        return gpt3.Gpt3DecoderLayer
+      elif self.config.decoder_block == "simple":
+        from layers import simple_layer
+
+        return simple_layer.SimpleDecoderLayer
+      else:
+        raise ValueError(f"Incorrect decoder_block name {self.config.decoder_block=}")
 
   def get_norm_layer(self):
     if self.config.decoder_block in ("default", "llama2", "mistral", "gemma", "simple"):
@@ -244,10 +253,15 @@ class Decoder(nn.Module):
       self,
       decoder_input_tokens,
       decoder_positions,
+      encoder_hidden_states=None,
+      encoder_positions=None,
       decoder_segment_ids=None,
+      encoder_segment_ids=None,
       deterministic=False,
       model_mode=common_types.MODEL_MODE_TRAIN,
   ):
+    """Defaults to vanilla maxtext decoder implementation if no encoder_hidden_state is provided."""
+
     cfg = self.config
     mesh = self.mesh
     assert decoder_input_tokens.ndim == 2  # [batch, len]
@@ -270,7 +284,8 @@ class Decoder(nn.Module):
           config=cfg,
       )(decoder_positions)
 
-    BlockLayer = self.get_decoder_layer()
+    use_encoder_hidden_states = encoder_hidden_states is not None
+    BlockLayer = self.get_decoder_layer(use_encoder_hidden_states)
 
     if cfg.remat_policy != "none":
       if cfg.remat_policy == "minimal":
@@ -331,33 +346,69 @@ class Decoder(nn.Module):
         elif cfg.scan_layers:
           stage_module = self.scan_decoder_layers(cfg, RemattedBlockLayer, cfg.num_layers_per_pipeline_stage, "layers_per_stage", mesh)
         elif not cfg.scan_layers:
-          stage_module=SequentialBlockDecoderLayers(decoder_layer=RemattedBlockLayer, num_decoder_layers=cfg.num_layers_per_pipeline_stage, config=cfg, mesh=mesh,quant=self.quant)
+          stage_module=SequentialBlockLayers(layer=RemattedBlockLayer, num_layers=cfg.num_layers_per_pipeline_stage, config=cfg, mesh=mesh,quant=self.quant)
 
-        y = pipeline.Pipeline(config=cfg, mesh=mesh, layers=stage_module, remat_policy=policy)(
-            y,
-            decoder_segment_ids,
-            decoder_positions,
-            deterministic,
-            model_mode,
-        )
-    else:
-      if cfg.scan_layers:
-        y, _ = self.scan_decoder_layers(cfg, RemattedBlockLayer, cfg.num_decoder_layers, "layers", mesh)(
-            y,
-            decoder_segment_ids,
-            decoder_positions,
-            deterministic,
-            model_mode,
-        )
-      else:
-        for lyr in range(cfg.num_decoder_layers):
-          y = RemattedBlockLayer(config=cfg, mesh=mesh, name=f"layers_{lyr}", quant=self.quant)(
+        if use_encoder_hidden_states:
+          y = pipeline.Pipeline(config=cfg, mesh=mesh, layers=stage_module, remat_policy=policy)(
+              y,
+              decoder_segment_ids,
+              decoder_positions,
+              encoder_hidden_states,
+              encoder_segment_ids,
+              encoder_positions,
+              deterministic,
+              model_mode,
+          )
+        else:
+          y = pipeline.Pipeline(config=cfg, mesh=mesh, layers=stage_module, remat_policy=policy)(
               y,
               decoder_segment_ids,
               decoder_positions,
               deterministic,
               model_mode,
           )
+    else:
+      if cfg.scan_layers:
+        if use_encoder_hidden_states:
+          y, _ = self.scan_decoder_layers(cfg, RemattedBlockLayer, cfg.num_decoder_layers, "layers", mesh)(
+              y,
+              decoder_segment_ids,
+              decoder_positions,
+              encoder_hidden_states,
+              encoder_segment_ids,
+              encoder_positions,
+              deterministic,
+              model_mode,
+          )
+        else:
+          y, _ = self.scan_decoder_layers(cfg, RemattedBlockLayer, cfg.num_decoder_layers, "layers", mesh)(
+              y,
+              decoder_segment_ids,
+              decoder_positions,
+              deterministic,
+              model_mode,
+          )
+      else:
+        for lyr in range(cfg.num_decoder_layers):
+          if use_encoder_hidden_states:
+            y = RemattedBlockLayer(config=cfg, mesh=mesh, name=f"layers_{lyr}", quant=self.quant)(
+                y,
+                decoder_segment_ids,
+                decoder_positions,
+                encoder_hidden_states,
+                encoder_segment_ids,
+                encoder_positions,
+                deterministic,
+                model_mode,
+            )
+          else:
+            y = RemattedBlockLayer(config=cfg, mesh=mesh, name=f"layers_{lyr}", quant=self.quant)(
+                y,
+                decoder_segment_ids,
+                decoder_positions,
+                deterministic,
+                model_mode,
+            )
 
     y = self.get_norm_layer()(
         dtype=cfg.dtype,
@@ -389,9 +440,203 @@ class Decoder(nn.Module):
     logits = logits.astype(jnp.float32)
     return logits
 
+class Encoder(nn.Module):
+  """A stack of encoder layers as a part of an encoder-decoder architecture."""
+
+  config: Config
+  shared_embedding: nn.Module
+  mesh: Mesh
+  quant: Optional[Quant] = None
+
+  def get_encoder_layer(self):
+    if self.config.encoder_block == "llama2":
+      from layers import seq2seq_llama2
+
+      return seq2seq_llama2.Seq2SeqLlamaEncoderLayer
+    elif self.config.encoder_block == "mistral":
+      raise ValueError(f"Incorrect encoder_block name {self.config.encoder_block=} (or not implemented)")
+    elif self.config.encoder_block == "gemma":
+      raise ValueError(f"Incorrect encoder_block name {self.config.encoder_block=} (or not implemented)")
+    elif self.config.encoder_block == "gpt3":
+      raise ValueError(f"Incorrect encoder_block name {self.config.encoder_block=} (or not implemented)")
+    elif self.config.encoder_block == "simple":
+      raise ValueError(f"Incorrect encoder_block name {self.config.encoder_block=} (or not implemented)")
+    else:
+      raise ValueError(f"Incorrect encoder_block name {self.config.encoder_block=}")
+
+  def get_norm_layer(self):
+    if self.config.encoder_block in ("default", "llama2", "mistral", "gemma", "simple"):
+      return RMSNorm
+    elif self.config.encoder_block == "gpt3":
+      from layers import gpt3
+
+      return functools.partial(gpt3.Gpt3LayerNorm, reductions_in_fp32=False, use_bias=True)
+    else:
+      raise ValueError(f"Incorrect encoder_block name {self.config.encoder_block=}")
+
+  def scan_encoder_layers(self, cfg, encoder_layer, length, metdata_axis_name, mesh):
+    initializing = self.is_mutable_collection("params")
+    params_spec = cfg.param_scan_axis if initializing else ScanIn(cfg.param_scan_axis)
+    cache_spec = 0
+    scan_fn = nn.scan(
+      encoder_layer,
+      variable_axes={
+          "params": params_spec,
+          "cache": cache_spec,
+          "intermediates": 0,
+          "aqt": 0,
+          "_overwrite_with_gradient": 0,
+      },
+      split_rngs={
+          "params": True,
+          "dropout": cfg.enable_dropout,
+      },
+      in_axes=(
+          nn.broadcast,
+          nn.broadcast,
+          nn.broadcast,
+          nn.broadcast,
+      ),
+      length=length,
+      metadata_params={nn.PARTITION_NAME: metdata_axis_name},
+    )
+    return scan_fn(config=cfg, mesh=mesh, name="layers", quant=self.quant)
+
+  @nn.compact
+  def __call__(
+      self,
+      encoder_input_tokens,
+      encoder_positions,
+      encoder_segment_ids=None,
+      deterministic=False,
+      model_mode=common_types.MODEL_MODE_TRAIN,
+  ):
+    cfg = self.config
+    mesh = self.mesh
+    assert encoder_input_tokens.ndim == 2  # [batch, len]
+
+    # [batch, length] -> [batch, length, emb_dim]
+    y = self.shared_embedding(encoder_input_tokens.astype("int32"))
+    y = nn.Dropout(rate=cfg.dropout_rate, broadcast_dims=(-2,))(y, deterministic=deterministic)
+    y = y.astype(cfg.dtype)
+
+    if cfg.use_untrainable_positional_embedding:
+      y = PositionalEmbedding(cfg.base_emb_dim)(y, encoder_positions)
+
+    if cfg.trainable_position_size > 0:
+      y += Embed(
+          num_embeddings=cfg.trainable_position_size,
+          features=cfg.emb_dim,
+          dtype=cfg.dtype,
+          embedding_init=nn.initializers.normal(stddev=1.0),
+          name="position_embedder",
+          config=cfg,
+      )(encoder_positions)
+
+    BlockLayer = self.get_encoder_layer()
+
+    if cfg.remat_policy != "none":
+      if cfg.remat_policy == "minimal":
+        policy = jax.checkpoint_policies.checkpoint_dots_with_no_batch_dims
+      elif cfg.remat_policy == "save_dot_except_mlpwi":
+        policy = jax.checkpoint_policies.save_only_these_names(
+            "query_proj",
+            "value_proj",
+            "key_proj",
+            "qkv_proj",
+            "out_proj",
+            "mlpwo",
+        )
+      elif cfg.remat_policy == "save_dot_except_mlp":
+        policy = jax.checkpoint_policies.save_only_these_names(
+            "query_proj",
+            "value_proj",
+            "key_proj",
+            "qkv_proj",
+            "out_proj",
+        )
+      elif cfg.remat_policy == "save_qkv_proj":
+        policy = jax.checkpoint_policies.save_only_these_names(
+            "query_proj",
+            "value_proj",
+            "key_proj",
+            "qkv_proj",
+        )
+      elif cfg.remat_policy == "qkv_proj_offloaded":
+        policy = jax.checkpoint_policies.save_and_offload_only_these_names(
+            names_which_can_be_saved=[],
+            names_which_can_be_offloaded=["query_proj", "value_proj", "key_proj"],
+            offload_src="device",
+            offload_dst="pinned_host",
+        )
+      elif cfg.remat_policy == "minimal_offloaded":
+        policy = jax.checkpoint_policies.offload_dot_with_no_batch_dims(offload_src="device", offload_dst="pinned_host")
+      elif cfg.remat_policy == "minimal_flash":
+        policy = jax.checkpoint_policies.save_from_both_policies(
+            jax.checkpoint_policies.checkpoint_dots_with_no_batch_dims,
+            jax.checkpoint_policies.save_only_these_names(
+                "context",
+            ),
+        )
+      else:
+        assert cfg.remat_policy == "full", "Remat policy needs to be on list of remat policies"
+        policy = None
+
+    RemattedBlockLayer = nn.remat(  # pylint: disable=invalid-name
+        BlockLayer,
+        prevent_cse=not cfg.scan_layers,
+        policy=policy,
+        static_argnums=(-1, -2, -3, -4, -5),
+    )
+    if cfg.using_pipeline_parallelism:
+        if cfg.num_layers_per_pipeline_stage == 1:
+          stage_module = BlockLayer(config=cfg, mesh=mesh, quant=self.quant)
+        elif cfg.scan_layers:
+          stage_module = self.scan_encoder_layers(cfg, RemattedBlockLayer, cfg.num_layers_per_pipeline_stage, "layers_per_stage", mesh)
+        elif not cfg.scan_layers:
+          stage_module=SequentialBlockLayers(layer=RemattedBlockLayer, num_layers=cfg.num_layers_per_pipeline_stage, config=cfg, mesh=mesh,quant=self.quant)
+
+        y = pipeline.Pipeline(config=cfg, mesh=mesh, layers=stage_module, remat_policy=policy)(
+            y,
+            encoder_segment_ids,
+            encoder_positions,
+            deterministic,
+            model_mode,
+        )
+    else:
+      if cfg.scan_layers:
+        y, _ = self.scan_encoder_layers(cfg, RemattedBlockLayer, cfg.num_encoder_layers, "layers", mesh)(
+            y,
+            encoder_segment_ids,
+            encoder_positions,
+            deterministic,
+            model_mode,
+        )
+      else:
+        for lyr in range(cfg.num_encoder_layers):
+          y = RemattedBlockLayer(config=cfg, mesh=mesh, name=f"layers_{lyr}", quant=self.quant)(
+              y,
+              encoder_segment_ids,
+              encoder_positions,
+              deterministic,
+              model_mode,
+          )
+
+    y = self.get_norm_layer()(
+        dtype=cfg.dtype,
+        weight_dtype=cfg.weight_dtype,
+        name="encoder_norm",
+        epsilon=cfg.normalization_layer_epsilon,
+        kernel_axes=("norm",),
+    )(y)
+    y = nn.Dropout(rate=cfg.dropout_rate, broadcast_dims=(-2,))(y, deterministic=deterministic)
+
+    y = nn.with_logical_constraint(y, ("activation_embed_and_logits_batch", "activation_length", "activation_vocab"))
+    y = y.astype(jnp.float32)
+    return y
 
 class Transformer(nn.Module):
-  """An decoder-only Transformer model."""
+  """A decoder-only Transformer model."""
 
   # Make new attributes required, so that all Transformer dependencies (train, decode, compile, etc) will error instead of silently use defaults.
   # pylint: disable=attribute-defined-outside-init
@@ -436,6 +681,72 @@ class Transformer(nn.Module):
         decoder_input_tokens=decoder_input_tokens,
         decoder_positions=decoder_positions,
         decoder_segment_ids=decoder_segment_ids,
+        deterministic=not enable_dropout,
+        model_mode=model_mode,
+    )
+    return logits
+
+class EncoderDecoderTransformer(nn.Module):
+  """An encoder-decoder Transformer model."""
+
+  # Make new attributes required, so that all Transformer dependencies (train, decode, compile, etc) will error instead of silently use defaults.
+  # pylint: disable=attribute-defined-outside-init
+  config: Config
+  mesh: Mesh
+  quant: Quant
+
+  def setup(self):
+    """Initialize shared_embedding & decoder layers."""
+
+    cfg = self.config
+    mesh = self.mesh
+    self.shared_embedding = Embed(
+        num_embeddings=cfg.vocab_size,
+        features=cfg.emb_dim,
+        dtype=cfg.dtype,
+        attend_dtype=jnp.float32 if cfg.logits_dot_in_fp32 else cfg.dtype,  # for logit training stability
+        embedding_init=nn.initializers.normal(stddev=1.0),
+        name="token_embedder",
+        config=cfg,
+    )
+
+    self.encoder = Encoder(config=cfg, shared_embedding=self.shared_embedding, mesh=mesh, quant=self.quant)
+    self.decoder = Decoder(config=cfg, shared_embedding=self.shared_embedding, mesh=mesh, quant=self.quant)
+
+  def __call__(
+      self,
+      decoder_input_tokens,
+      decoder_positions,
+      encoder_input_tokens,
+      encoder_positions,
+      decoder_segment_ids=None,
+      encoder_segment_ids=None,
+      enable_dropout=True,
+      model_mode=common_types.MODEL_MODE_TRAIN,
+  ):
+    """Applies Transformer decoder-branch on encoded-input and target."""
+
+    if (decoder_segment_ids is not None or encoder_segment_ids is not None) and model_mode == common_types.MODEL_MODE_AUTOREGRESSIVE:
+      raise ValueError(
+          f"During autoregressive decoding we assume the tokens are in the active sequence"
+          f" which is always {common_types.DECODING_ACTIVE_SEQUENCE_INDICATOR}."
+      )
+    
+    encoder_hidden_states = self.encoder(
+        encoder_input_tokens=encoder_input_tokens,
+        encoder_positions=encoder_positions,
+        encoder_segment_ids=encoder_segment_ids,
+        deterministic=not enable_dropout,
+        model_mode=model_mode,
+    )
+
+    logits = self.decoder(
+        decoder_input_tokens=decoder_input_tokens,
+        decoder_positions=decoder_positions,
+        decoder_segment_ids=decoder_segment_ids,
+        encoder_hidden_states=encoder_hidden_states,
+        encoder_positions=encoder_positions,
+        encoder_segment_ids=encoder_segment_ids,
         deterministic=not enable_dropout,
         model_mode=model_mode,
     )
