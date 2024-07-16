@@ -76,6 +76,7 @@ save_quantized_params_path: ""
 # Shard the range finding operation for quantization. By default this is set to number of slices.
 quantization_local_shard_count: -1
 
+encoder_block: "llama2" # which style of EncoderBlock to use.
 decoder_block: "llama2" # which style of DecoderBlock to use.
 # Global parameter scale needs to be a power of 2. If you want finer grained control of the model sizes
 # then you should explicitly set base_embed_dim, base_num_query_heads, base_num_kv_heads,
@@ -86,6 +87,7 @@ base_emb_dim: 2048
 base_num_query_heads: 16
 base_num_kv_heads: 16
 base_mlp_dim: 7168
+base_num_encoder_layers: 16
 base_num_decoder_layers: 16
 head_dim: 128
 # mixture of experts (moe)

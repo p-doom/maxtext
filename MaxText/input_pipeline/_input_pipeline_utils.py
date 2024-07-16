@@ -154,6 +154,7 @@ class NormalizeFeatures(grain.MapTransform):
 
 @dataclasses.dataclass
 class ReformatPacking(grain.MapTransform):
+  # FIXME: this does not work for encoder_decoder data structure
   """Reformat packing outputs."""
 
   def map(self, data):
@@ -182,8 +183,10 @@ class PadToMaxLength(grain.MapTransform):
       pad_amount = [(0, pad_amount)] + [(0, 0)] * (len(x.shape) - 1)
       return np.pad(x, pad_amount)
 
-    data["inputs_segmentation"] = np.ones(data["inputs"].shape, dtype=np.int32)
-    data["inputs_position"] = np.arange(data["inputs"].shape[0], dtype=np.int32)
+    data["encoder_inputs_segmentation"] = np.ones(data["encoder_inputs"].shape, dtype=np.int32)
+    data["encoder_inputs_position"] = np.arange(data["encoder_inputs"].shape[0], dtype=np.int32)
+    data["decoder_inputs_segmentation"] = np.ones(data["decoder_inputs"].shape, dtype=np.int32)
+    data["decoder_inputs_position"] = np.arange(data["decoder_inputs"].shape[0], dtype=np.int32)
     data["targets_segmentation"] = np.ones(data["targets"].shape, dtype=np.int32)
     data["targets_position"] = np.arange(data["targets"].shape[0], dtype=np.int32)
     for key, _ in data.items():

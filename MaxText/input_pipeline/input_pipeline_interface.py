@@ -68,6 +68,52 @@ class SyntheticDataIterator:
         (config.global_batch_size_to_load, config.max_target_length), dtype=jax.numpy.int32
     )
     return output
+  
+class SyntheticSeq2SeqDataIterator:
+  """Creates a synthetic seq2seq data iterator for performance testing work"""
+
+  def __init__(self, config, mesh):
+    self.mesh = mesh
+    self.config = config
+    data_pspec = P(*config.data_sharding)
+    data_pspec_shardings = jax.tree_util.tree_map(lambda p: jax.sharding.NamedSharding(mesh, p), data_pspec)
+    self.data_generator = jax.jit(
+        SyntheticDataIterator.raw_generate_synthetic_data, out_shardings=data_pspec_shardings, static_argnums=0
+    )
+
+  def __iter__(self):
+    return self
+
+  def __next__(self):
+    with self.mesh:
+      return self.data_generator(self.config)
+
+  @staticmethod
+  def raw_generate_synthetic_data(config):
+    """Generates a single batch of synthetic data"""
+    output = {}
+    output["decoder_inputs"] = jax.numpy.zeros((config.global_batch_size_to_load, config.max_target_length), dtype=jax.numpy.int32)
+    output["decoder_inputs_position"] = jax.numpy.zeros(
+        (config.global_batch_size_to_load, config.max_target_length), dtype=jax.numpy.int32
+    )
+    output["decoder_inputs_segmentation"] = jax.numpy.ones(
+        (config.global_batch_size_to_load, config.max_target_length), dtype=jax.numpy.int32
+    )
+    output["encoder_inputs"] = jax.numpy.zeros((config.global_batch_size_to_load, config.max_target_length), dtype=jax.numpy.int32)
+    output["encoder_inputs_position"] = jax.numpy.zeros(
+        (config.global_batch_size_to_load, config.max_target_length), dtype=jax.numpy.int32
+    )
+    output["encoder_inputs_segmentation"] = jax.numpy.ones(
+        (config.global_batch_size_to_load, config.max_target_length), dtype=jax.numpy.int32
+    )
+    output["targets"] = jax.numpy.zeros((config.global_batch_size_to_load, config.max_target_length), dtype=jax.numpy.int32)
+    output["targets_position"] = jax.numpy.zeros(
+        (config.global_batch_size_to_load, config.max_target_length), dtype=jax.numpy.int32
+    )
+    output["targets_segmentation"] = jax.numpy.ones(
+        (config.global_batch_size_to_load, config.max_target_length), dtype=jax.numpy.int32
+    )
+    return output
 
 
 class BadSyntheticDataIterator:
@@ -140,12 +186,23 @@ def make_mixed_train_iterator(config, mesh, add_bos, add_eos):
 
 
 def create_data_iterator(config, mesh, add_bos=True, add_eos=True):
-  if config.dataset_type == "synthetic":
-    return SyntheticDataIterator(config, mesh), None
-  elif config.dataset_type in ("tfds", "grain", "c4_mlperf", "hf"):
-    return make_mixed_train_iterator(config, mesh, add_bos, add_eos)
+  if config.encoder_block is not None:
+    """Encoder-decoder model"""
+    if config.dataset_type == "synthetic":
+      return SyntheticSeq2SeqDataIterator(config, mesh), None
+    elif config.dataset_type in ("tfds", "grain", "c4_mlperf", "hf"):
+      # TODO: implement this
+      raise NotImplementedError("Encoder-decoder model is not yet supported for real data")
+    else:
+      assert False, f"Unknown dataset_type {config.dataset_type}, dataset_type must be synthetic, tfds, grain, hf or c4_mlperf"
   else:
-    assert False, f"Unknown dataset_type {config.dataset_type}, dataset_type must be synthetic, tfds, grain, hf or c4_mlperf"
+    """Decoder-only model"""
+    if config.dataset_type == "synthetic":
+      return SyntheticDataIterator(config, mesh), None
+    elif config.dataset_type in ("tfds", "grain", "c4_mlperf", "hf"):
+      return make_mixed_train_iterator(config, mesh, add_bos, add_eos)
+    else:
+      assert False, f"Unknown dataset_type {config.dataset_type}, dataset_type must be synthetic, tfds, grain, hf or c4_mlperf"
 
 
 def get_shaped_batch(config):
@@ -153,9 +210,12 @@ def get_shaped_batch(config):
   output of create_data_iterator, but eval_shape doesn't work, see b/306901078."""
   batch_shape = (config.global_batch_size_to_load, config.max_target_length)
   shaped_batch = {}
-  shaped_batch["inputs"] = jax.ShapeDtypeStruct(batch_shape, jnp.int32)
-  shaped_batch["inputs_position"] = jax.ShapeDtypeStruct(batch_shape, jnp.int32)
-  shaped_batch["inputs_segmentation"] = jax.ShapeDtypeStruct(batch_shape, jnp.int32)
+  shaped_batch["encoder_inputs"] = jax.ShapeDtypeStruct(batch_shape, jnp.int32)
+  shaped_batch["encoder_inputs_position"] = jax.ShapeDtypeStruct(batch_shape, jnp.int32)
+  shaped_batch["encoder_inputs_segmentation"] = jax.ShapeDtypeStruct(batch_shape, jnp.int32)
+  shaped_batch["decoder_inputs"] = jax.ShapeDtypeStruct(batch_shape, jnp.int32)
+  shaped_batch["decoder_inputs_position"] = jax.ShapeDtypeStruct(batch_shape, jnp.int32)
+  shaped_batch["decoder_inputs_segmentation"] = jax.ShapeDtypeStruct(batch_shape, jnp.int32)
   shaped_batch["targets"] = jax.ShapeDtypeStruct(batch_shape, jnp.int32)
   shaped_batch["targets_position"] = jax.ShapeDtypeStruct(batch_shape, jnp.int32)
   shaped_batch["targets_segmentation"] = jax.ShapeDtypeStruct(batch_shape, jnp.int32)

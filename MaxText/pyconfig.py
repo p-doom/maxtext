@@ -316,6 +316,7 @@ class _HyperParameters:
     raw_keys["num_query_heads"] = 2**num_head_scale * raw_keys["base_num_query_heads"]
     raw_keys["num_kv_heads"] = 2**num_head_scale * raw_keys["base_num_kv_heads"]
     raw_keys["mlp_dim"] = 2**mlp_dim_scale * raw_keys["base_mlp_dim"]
+    raw_keys["num_encoder_layers"] = 2**layer_scale * raw_keys["base_num_encoder_layers"]
     raw_keys["num_decoder_layers"] = 2**layer_scale * raw_keys["base_num_decoder_layers"]
 
     raw_keys["global_batch_size_to_load"], raw_keys["global_batch_size_to_train_on"] = calculate_global_batch_sizes(raw_keys)

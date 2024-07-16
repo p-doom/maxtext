@@ -225,9 +225,12 @@ def loss_fn(model, config, data, dropout_rng, params, is_train=True):
 
   logits, intermediate_outputs = model.apply(
       params,
-      data["inputs"],
-      data["inputs_position"],
-      decoder_segment_ids=data["inputs_segmentation"],
+      decoder_input_tokens=data["decoder_inputs"],
+      decoder_segment_ids=data["decoder_inputs_segmentation"],
+      decoder_positions=data["decoder_inputs_position"],
+      encoder_input_tokens=data["encoder_inputs"],
+      encoder_segment_ids=data["encoder_segmentation"],
+      encoder_positions=data["encoder_positions"],
       enable_dropout=config.enable_dropout if is_train else False,
       rngs={"dropout": rng1, "params": aqt_rng},
       mutable="intermediates",
