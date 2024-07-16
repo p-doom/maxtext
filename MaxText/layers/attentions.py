@@ -727,7 +727,7 @@ class AttentionOp(nn.Module):
     )
     return cached_prefill, cached_ar
 
-  def kv_cache(self, key: Array, value: Array, decoder_segment_ids: Array, model_mode: str) -> tuple:
+  def kv_cache(self, key: Array, value: Array, kv_segment_ids: Array, model_mode: str) -> tuple:
     """KV cache takes the current state and updates the state accordingly.
 
     The key and value have dimension [b, s, n_kv, d],
@@ -749,9 +749,9 @@ class AttentionOp(nn.Module):
       raise ValueError(f"Can't KV cache with mismatched shapes {key.shape=}, {value.shape=}")
 
     if model_mode == common_types.MODEL_MODE_TRAIN:
-      return (key, value, decoder_segment_ids), None
+      return (key, value, kv_segment_ids), None
     elif model_mode == common_types.MODEL_MODE_PREFILL:
-      return self.kv_cache_prefill(key, value, decoder_segment_ids), None
+      return self.kv_cache_prefill(key, value, kv_segment_ids), None
     elif model_mode == common_types.MODEL_MODE_AUTOREGRESSIVE:
       return self.kv_cache_autoregressive(key, value)
     else:
@@ -781,8 +781,8 @@ class AttentionOp(nn.Module):
     return attn_out
 
   @nn.compact
-  def __call__(self, query, key, value, decoder_segment_ids, model_mode):
-    prefill_kv_cache, ar_kv_cache = self.kv_cache(key, value, decoder_segment_ids, model_mode)
+  def __call__(self, query, key, value, kv_segment_ids, model_mode):
+    prefill_kv_cache, ar_kv_cache = self.kv_cache(key, value, kv_segment_ids, model_mode)
 
     prefill_unnormalized_output, prefill_exponentials_max, prefill_exponentials_sum = self.apply_attention(
         query=query,
@@ -962,8 +962,9 @@ class Attention(nn.Module):
       self,
       inputs_q: Array,
       inputs_kv: Array,
-      inputs_positions: Array,
-      decoder_segment_ids: Array | None = None,
+      inputs_q_positions: Array,
+      inputs_kv_positions: Array,
+      kv_segment_ids: Array | None = None,
       *,
       model_mode: str = common_types.MODEL_MODE_TRAIN,
       deterministic: bool = False,
@@ -1000,8 +1001,8 @@ class Attention(nn.Module):
 
     # apply ROPE
     query = RotaryEmbedding(min_timescale=self.config.rope_min_timescale, max_timescale = self.config.rope_max_timescale,
-                             embedding_dims=self.head_dim, name="query_rotary")(inputs=query, position=inputs_positions)
-    key = self.key_rotary(key, inputs_positions)
+                             embedding_dims=self.head_dim, name="query_rotary")(inputs=query, position=inputs_q_positions)
+    key = self.key_rotary(key, inputs_kv_positions)
 
     # annotate with sharding constraint.
     query = nn.with_logical_constraint(query, self.query_axis_names)
@@ -1031,7 +1032,7 @@ class Attention(nn.Module):
         reshape_q=self.reshape_q,
     )
 
-    out = attention_op(query, key, value, decoder_segment_ids, model_mode)
+    out = attention_op(query, key, value, kv_segment_ids, model_mode)
 
     out = nn.with_logical_constraint(out, self.out_axis_names)
 
